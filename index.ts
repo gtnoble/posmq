@@ -201,7 +201,7 @@ export class PosixMq extends EventEmitter {
   }
   
   get blockingIo(): boolean {
-    return this.attributes.flags === fileConstants.O_NONBLOCK;
+    return ! (this.attributes.flags === fileConstants.O_NONBLOCK);
   }
   
   close(): void {

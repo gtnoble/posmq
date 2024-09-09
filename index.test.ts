@@ -31,16 +31,16 @@ tap.test(
         }
       )
       
+      const sentMessage = Buffer.from(testMessage, "utf-8");
+      
       tt.test("Test Message Transmission", 
       async (tt) => {
-        const sentMessage = Buffer.from(testMessage, "utf-8");
         const mq = new Pmq.PosixMq(
           "/testMq2", 
           "a+", 
           Pmq.MAX_MESSAGE_QUEUE_LENGTH, 
           sentMessage.length
         );
-
         //const mq = makeBiggestMq("/testMq");
         mq.send(sentMessage);
         const receivedMessage = mq.receive();
