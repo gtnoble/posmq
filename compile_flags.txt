@@ -1,0 +1,1 @@
+-I/home/gtnoble/.cache/node-gyp/20.17.0/include/node

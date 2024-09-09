@@ -1,0 +1,22 @@
+{
+  "name": "posmq",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "install": "node-gyp rebuild",
+    "build": "npx tsc && node-gyp build && node-gyp build --debug"
+  },
+  "author": "",
+  "license": "MIT",
+  "gypfile": true,
+  "description": "",
+  "type": "module",
+  "dependencies": {
+    "@types/node": "^22.5.4"
+  },
+  "devDependencies": {
+    "tap": "^21.0.1",
+    "@types/tap": "^15.0.12"
+  }
+}
