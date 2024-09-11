@@ -16,19 +16,37 @@ export const MAX_MESSAGE_SIZE = parseInt(
 
 export type MqName = `/${string}`
 
+export interface TimeSpec {
+  seconds: number,
+  nanoseconds: number
+}
 export interface LowLevelMq {
-  openPosixMq: 
-    (name: MqName, oflags: number, maxMessages: number, maxMessageSize: number) => number | string,
+  openPosixMq: (
+    name: MqName, 
+    oflags: number, 
+    maxMessages: number, 
+    maxMessageSize: number
+  ) => number | string,
   closePosixMq: (mqDescriptor: number) => string | null,
-  sendPosixMq: (mqDescriptor: number, message: Buffer, priority: number) => string | null,
-  receivePosixMq: (mqDescriptor: number) => Buffer | string,
+  sendPosixMq: (
+    mqDescriptor: number, 
+    message: Buffer, 
+    priority: number, 
+    timeout?: TimeSpec
+  ) => string | null,
+  receivePosixMq: (
+    mqDescriptor: number, 
+    messageLength: number, 
+    timeout?: TimeSpec
+  ) => Buffer | string,
   posixMqAttributes: (mqDescriptor: number) => {
     flags: number; 
     maxMessages: number; 
     maxMessageSize: number; 
     currentMessageCount: number
   },
-  posixMqNotify: (mqDescriptor: number) => string | null
+  posixMqNotify: (mqDescriptor: number) => string | null,
+  posixMqUnlink: (mqName: string) => null
 }
 
 const require = createRequire(import.meta.filename);
@@ -38,6 +56,13 @@ const LowLevelPosixMq: LowLevelMq = require(
 
 export type FopenFlags = "r" | "a" | "r+" | "a+";
 
+function makeTimespec(posixTimeMs: number) {
+  const posixTimeSeconds = posixTimeMs / 1000.0;
+  return {
+    seconds: Math.floor(posixTimeSeconds),
+    nanoseconds: Math.round(posixTimeSeconds % 1000 * 1E9)
+  };
+}
 
 function fileFlagsToOflags(flags: FopenFlags | number): number {
   let oflags: number;
@@ -87,6 +112,9 @@ function throwCError(message: string, code: string) {
 
 export class PosixMq extends EventEmitter {
   mqDescriptor: number | null = null;
+  readonly flags: number;
+  readonly maxMessages: number;
+  readonly maxMessageSize: number;
 
   constructor(
     name: MqName, 
@@ -165,6 +193,10 @@ export class PosixMq extends EventEmitter {
       }
     }
     
+    this.flags = this.attributes.flags;
+    this.maxMessages = this.attributes.maxMessages;
+    this.maxMessageSize = this.attributes.maxMessageSize;
+    
   }
   
   listen() {
@@ -201,7 +233,7 @@ export class PosixMq extends EventEmitter {
   }
   
   get blockingIo(): boolean {
-    return ! (this.attributes.flags === fileConstants.O_NONBLOCK);
+    return ! (this.flags === fileConstants.O_NONBLOCK);
   }
   
   close(): void {
@@ -218,18 +250,25 @@ export class PosixMq extends EventEmitter {
     }
   }
   
-  send(message: Buffer, priority: number = 0): boolean {
+  send(message: Buffer, priority: number = 0, timeout?: number): boolean {
     if (this.mqDescriptor === null) {
       throw new Error("error: can't send to a closed posix message queue.");
     }
 
-    const messageQueueSendResult = LowLevelPosixMq.sendPosixMq(this.mqDescriptor, message, priority);
+    let timespecTimeout
+    if (timeout) {
+      timespecTimeout = makeTimespec(timeout);
+    }
+    const messageQueueSendResult = LowLevelPosixMq.sendPosixMq(
+      this.mqDescriptor, message, priority, timespecTimeout
+    );
+
     if (typeof messageQueueSendResult === 'string') {
       if (messageQueueSendResult === "EAGAIN" && this.blockingIo) {
         return false;
       }
       if (messageQueueSendResult === "EMSGSIZE") {
-        const maxMessageSize = this.attributes.maxMessageSize;
+        const maxMessageSize = this.maxMessageSize;
         throw new Error(
           "error: can't send a message larger than the max size for this message queue: " +
           `message size: ${message.length}: max size ${maxMessageSize}`);
@@ -239,11 +278,18 @@ export class PosixMq extends EventEmitter {
     return true;
   }
   
-  receive(): Buffer | undefined {
+  receive(timeout?: number): Buffer | undefined {
     if (this.mqDescriptor === null) {
       throw new Error("error: can't receive from a closed posix message queue");
     }
-    const messageQueueReceiveResult = LowLevelPosixMq.receivePosixMq(this.mqDescriptor);
+    
+    let timespecTimeout;
+    if (timeout) {
+      timespecTimeout = makeTimespec(timeout);
+    }
+    const messageQueueReceiveResult = LowLevelPosixMq.receivePosixMq(
+      this.mqDescriptor, this.maxMessageSize, timespecTimeout
+    );
     if (typeof messageQueueReceiveResult === 'string') {
       if (messageQueueReceiveResult === "EAGAIN" && this.blockingIo) {
         return undefined;
@@ -254,6 +300,30 @@ export class PosixMq extends EventEmitter {
     }
     else {
       return messageQueueReceiveResult;
+    }
+  }
+  
+  static unlink(mqName: string, force?: boolean): void {
+    const messageQueueUnlinkResult = LowLevelPosixMq.posixMqUnlink(mqName);
+    
+    if (typeof messageQueueUnlinkResult === 'string') {
+      switch (messageQueueUnlinkResult) {
+        case "EACCES":
+          throw new Error(`error: not authorized to unlink message queue with name ${mqName}`);
+          break;
+        case "ENAMETOOLONG":
+          throw new Error(`error: message queue name "${mqName}" is too long`);
+          break;
+        case "ENOENT":
+          if (force)
+            break;
+          throw new Error(`error: there is no message queue with name "${mqName}"`);
+          break;
+        default:
+          throw new Error(
+            `error: unable to unlink message queue: error code: ${messageQueueUnlinkResult}`
+          )
+      }
     }
   }
 }

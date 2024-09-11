@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <node_api.h>
 #include <mqueue.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,30 +16,33 @@
 
 #define HANDLE_ERROR(status) if (status != napi_ok) {handle_error(env); return NULL;}
 
-char *get_string(napi_env env, napi_value string) {
+napi_status get_string(napi_env env, napi_value node_string, char **string) {
 
   size_t string_length;
   napi_status status = napi_get_value_string_utf8(
-    env, string, NULL, 0, &string_length
+    env, node_string, NULL, 0, &string_length
   );
   if (status != napi_ok) {
-    handle_error(env);
-    return NULL;
+    return status;
   }
 
   size_t buffer_size = string_length + 1;
   char *c_string = calloc(buffer_size, sizeof(char));
 
   status = napi_get_value_string_utf8(
-    env, string, c_string, buffer_size, NULL
+    env, node_string, c_string, buffer_size, NULL
   );
 
   if (status != napi_ok) {
     free(c_string);
+    *string = NULL;
     handle_error(env);
-    return NULL;
+    return status;
   }
-  return c_string;
+  
+  *string = c_string;
+
+  return status;
 }
 
 void handle_error(napi_env env) {
@@ -111,6 +115,18 @@ napi_value get_message_queue_attributes(napi_env env, napi_callback_info info) {
   return node_mq_attributes_object;
 }
 
+napi_status check_if_undefined(napi_env env, napi_value value, bool *is_undefined) {
+  napi_valuetype type;
+  napi_status status = napi_typeof(env, value, &type);
+  if (type == napi_undefined) {
+    *is_undefined = true;
+  }
+  else {
+    *is_undefined = false;
+  }
+  return status;
+}
+
 napi_value open_posix_mq(napi_env env, napi_callback_info info) {
   size_t argc = 4;
   napi_value function_argv[4];
@@ -118,6 +134,9 @@ napi_value open_posix_mq(napi_env env, napi_callback_info info) {
   HANDLE_ERROR(status)
 
   napi_value name = function_argv[0];
+  char *c_name;
+  status = get_string(env, name, &c_name);
+  HANDLE_ERROR(status)
 
   int32_t oflag;
   status = napi_get_value_int32(env, function_argv[1], &oflag);
@@ -136,11 +155,12 @@ napi_value open_posix_mq(napi_env env, napi_callback_info info) {
     .mq_msgsize = max_msg_size
   };
   int32_t mq = mq_open(
-      get_string(env, name),
+      c_name,
       oflag, 
       S_IRWXU, 
       &attributes
   );
+  free(c_name);
   
   if (mq == (mqd_t) -1) {
     return cerror_name(env);
@@ -166,26 +186,86 @@ napi_value close_posix_mq(napi_env env, napi_callback_info info) {
   return NULL;
 }
 
+napi_status get_timespec(napi_env env, napi_value timespec_object, struct timespec *time) {
+    napi_value seconds;
+    napi_status status = napi_get_named_property(
+      env, timespec_object, "seconds", &seconds
+    );
+    if (status != napi_ok)
+      return status;
+
+    napi_value nanoseconds;
+    status = napi_get_named_property(
+      env, timespec_object, "nanoseconds", &nanoseconds
+    );
+    if (status != napi_ok)
+      return status;
+
+    int64_t seconds_value;
+    status = napi_get_value_int64(env, seconds, &seconds_value);
+    if (status != napi_ok)
+      return status;
+    
+    int64_t nanoseconds_value;
+    status = napi_get_value_int64(env, nanoseconds, &nanoseconds_value);
+    if (status != napi_ok)
+      return status;
+      
+    time->tv_sec = seconds_value;
+    time->tv_nsec = nanoseconds_value;
+    
+    return napi_ok;
+}
+
 napi_value send_posix_mq(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value argv[3];
+  size_t argc = 4;
+  napi_value argv[4];
   napi_status status = napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   HANDLE_ERROR(status)
+
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
   
   napi_value message_queue_object = argv[0];
+  int32_t message_descriptor; 
+  status = napi_get_value_int32(env, message_queue_object, &message_descriptor);
+
+  
   napi_value message = argv[1];
+  char *message_data;
+  size_t message_length;
+  status = napi_get_buffer_info(
+    env, message, (void **)&message_data, &message_length
+  );
+  HANDLE_ERROR(status)
 
   uint32_t message_priority;
   status = napi_get_value_uint32(env, argv[2], &message_priority);
   HANDLE_ERROR(status)
+    
+  napi_value absolute_timeout = argv[3];
   
-  int32_t message_descriptor; 
-  status = napi_get_value_int32(env, message_queue_object, &message_descriptor);
-
-  char *message_data;
-  size_t message_length;
-  status = napi_get_buffer_info(env, message, (void **)&message_data, &message_length);
+  bool timeout_is_undefined;
+  check_if_undefined(env, absolute_timeout, &timeout_is_undefined);
   HANDLE_ERROR(status)
+
+  if (! timeout_is_undefined) {
+    struct timespec c_timeout;
+    status = get_timespec(env, absolute_timeout, &c_timeout);
+    HANDLE_ERROR(status)
+      
+    if (mq_timedsend(
+      message_descriptor, 
+      message_data, 
+      message_length, 
+      message_priority, 
+      &c_timeout)) {
+      return cerror_name(env);
+    }
+    return NULL;
+  }
+  
+
   if (mq_send(
     message_descriptor,
     message_data, 
@@ -198,26 +278,55 @@ napi_value send_posix_mq(napi_env env, napi_callback_info info) {
 }
 
 napi_value receive_posix_mq(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
+  size_t argc = 3;
+  napi_value argv[3];
   napi_status status = napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   HANDLE_ERROR(status)
+
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
   
   int32_t mq;
   status = napi_get_value_int32(env, argv[0], &mq);
   HANDLE_ERROR(status)
 
-  struct mq_attr attributes;
-  if(mq_getattr(mq, &attributes)) {
-    return cerror_name(env);
-  }
-  size_t message_length = attributes.mq_msgsize;
-
-  char *message_data = malloc(sizeof(char) * message_length);
+  uint32_t message_length;
+  status = napi_get_value_uint32(env, argv[1], &message_length);
+  HANDLE_ERROR(status)
+    
+  char *message_data;
   unsigned int priority;
-  if (mq_receive(mq, message_data, message_length, &priority) == -1) {
-    free(message_data);
-    return cerror_name(env);
+
+  napi_value absolute_timeout = argv[2];
+  bool timeout_is_undefined;
+  check_if_undefined(env, absolute_timeout, &timeout_is_undefined);
+  HANDLE_ERROR(status)
+
+  if (! timeout_is_undefined) {
+    struct timespec timeout;
+    status = get_timespec(env, absolute_timeout, &timeout);
+    HANDLE_ERROR(status)
+      
+    message_data =  malloc(sizeof(char) * message_length);
+
+    if (mq_timedreceive(
+      mq, 
+      message_data, 
+      message_length, 
+      &priority, 
+      &timeout)) {
+        free(message_data);
+        return cerror_name(env);
+      }
+  }
+    
+  else {
+    message_data =  malloc(sizeof(char) * message_length);
+
+    if (mq_receive(mq, message_data, message_length, &priority) == -1) {
+      free(message_data);
+      return cerror_name(env);
+    }
   }
   
   napi_value node_data;
@@ -251,7 +360,34 @@ napi_value notify_posix_mq(napi_env env, napi_callback_info info) {
   
 }
 
+napi_value unlink_posix_mq(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_status status = napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  HANDLE_ERROR(status)
+    
+  char *mq_name;
+  status = get_string(env, argv[0], &mq_name);
+  HANDLE_ERROR(status);
+  
+  if(mq_unlink(mq_name)) {
+    return cerror_name(env);
+  }
+  return NULL;
+}
+
 NAPI_MODULE_INIT() {
+  napi_value mq_unlink_fn;
+  napi_create_function(
+    env, 
+    "posixMqUnlink", 
+    NAPI_AUTO_LENGTH, 
+    unlink_posix_mq, 
+    NULL, 
+    &mq_unlink_fn
+  );
+  napi_set_named_property(env, exports, "posixMqUnlink", mq_unlink_fn);
+
   napi_value mq_notify_fn;
   napi_create_function(
     env, 

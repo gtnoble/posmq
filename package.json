@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "NODE_ENV=dev npx tap dist",
     "install": "node-gyp rebuild",
     "build": "npx tsc && node-gyp build && node-gyp build --debug"
   },

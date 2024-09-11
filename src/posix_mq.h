@@ -1,7 +1,7 @@
 #include "js_native_api_types.h"
 #include <mqueue.h>
 
-char *get_string(napi_env env, napi_value string);
+napi_status get_string(napi_env env, napi_value node_string, char **string);
 void handle_error(napi_env env);
 void handle_cerror(napi_env env);
 napi_value open_posix_mq(napi_env env, napi_callback_info info);
